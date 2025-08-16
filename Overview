@@ -1,0 +1,80 @@
+import Foundation
+import SwiftData
+import SwiftUI
+
+// MARK: - Color Utilities
+extension Color {
+    init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let r = Double((int >> 16) & 0xFF) / 255.0
+        let g = Double((int >> 8) & 0xFF) / 255.0
+        let b = Double(int & 0xFF) / 255.0
+        self.init(.sRGB, red: r, green: g, blue: b, opacity: 1)
+    }
+}
+
+// MARK: - Theme
+enum Theme {
+    static let bgDark  = Color(hex: "#071952")
+    static let bgMid   = Color(hex: "#0B666A")
+    static let accent  = Color(hex: "#35A29F")
+    static let accent2 = Color(hex: "#97FEED")
+}
+
+// MARK: - Cell Type
+// 👇 The raw values have been changed back to Japanese to match your saved data.
+enum CellType: String, Codable, CaseIterable {
+    case routine = "ルーティーン"
+    case today   = "今日やること"
+    case deadline = "締切管理"
+    case memo    = "メモ"
+}
+
+// MARK: - Data Structures
+struct TaskItem: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var text: String = ""
+    var isCompleted: Bool = false
+    var dueDate: Date? = nil
+    var lastCompletedDate: Date?
+}
+
+struct MemoContentItem: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var isTask: Bool
+    var text: String = ""
+    var isCompleted: Bool = false
+}
+
+// MARK: - SwiftData Model
+@Model
+final class CellItem {
+    @Attribute(.unique) var id: UUID = UUID()
+    var cellType: CellType // This will now decode correctly
+    var positionX: Double
+    var positionY: Double
+    var width: Double
+    var height: Double
+    var creationDate: Date
+
+    @Attribute(.externalStorage) var content: Data?
+    var lastModifiedDate: Date = Date()
+
+    init(cellType: CellType,
+         positionX: Double = 50,
+         positionY: Double = 100,
+         width: Double = 250,
+         height: Double = 220) {
+        self.cellType = cellType
+        self.positionX = positionX
+        self.positionY = positionY
+        self.width = width
+        self.height = height
+        self.creationDate = Date()
+        self.lastModifiedDate = Date()
+    }
+
+    var name: String { cellType.rawValue }
+}
