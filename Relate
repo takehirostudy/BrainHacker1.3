@@ -1,0 +1,222 @@
+import SwiftUI
+import SwiftData
+
+struct CellView: View {
+    @Bindable var item: CellItem
+    // 親ビュー(ContentView)の状態を直接変更するためのBinding
+    @Binding var dragTranslation: CGSize
+    @Binding var resizeDelta: CGSize
+    let onLongPress: () -> Void
+
+    // MARK: - Data for rows
+    @State private var tasks: [TaskItem] = []
+    @State private var memoContent: [MemoContentItem] = []
+
+    // 影響制御用フラグ（ヒット抑制・影オフなど）
+    private var isDragging: Bool { dragTranslation != .zero }
+    private var isResizing: Bool { resizeDelta != .zero }
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            VStack(spacing: 0) {
+                headerView
+                    .highPriorityGesture(moveGesture)  // ヘッダー優先でドラッグ
+                contentScrollView
+                    .disabled(isDragging || isResizing) // 競合回避＆負荷軽減
+            }
+            .background(Color(uiColor: .systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .shadow(color: (isDragging || isResizing) ? .clear : .black.opacity(0.2),
+                    radius: 5, x: 0, y: 2)
+
+            resizeHandle
+        }
+        // frame, position, offsetなどのレイアウト指定は親ビューに任せる
+        .onLongPressGesture { onLongPress() }
+        .onAppear(perform: onAppearLoad)
+        .onChange(of: item.lastModifiedDate) { loadContent() }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text(item.name))
+        .accessibilityAddTraits(.isButton)
+    }
+
+    // MARK: - Subviews
+    private var headerView: some View {
+        Text(item.name)
+            .font(.subheadline)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(Color.gray.opacity(0.1))
+            .contentShape(Rectangle())
+    }
+
+    private var contentScrollView: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                switch item.cellType {
+                case .memo:
+                    ForEach(memoContent) { content in
+                        memoRow(for: content)
+                        Divider().padding(.leading, content.isTask ? 35 : 15)
+                    }
+                default:
+                    ForEach(tasks) { task in
+                        taskRow(for: task)
+                        Divider().padding(.leading, 35)
+                    }
+                }
+            }
+        }
+        .simultaneousGesture(TapGesture())
+    }
+
+    private var resizeHandle: some View {
+        Circle()
+            .fill(Theme.accent2.opacity(0.9))
+            .frame(width: 25, height: 25)
+            .padding(4)
+            .gesture(resizeGesture)
+            .accessibilityLabel("Resize Cell")
+    }
+
+    // MARK: - Gestures
+    private var moveGesture: some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                // ジェスチャー中、Bindingを通じて親ビューのStateを直接更新
+                self.dragTranslation = value.translation
+            }
+            .onEnded { value in
+                // ジェスチャー終了時、永続化モデルを更新
+                item.positionX += value.translation.width
+                item.positionY += value.translation.height
+                // 親ビューのStateをリセット
+                self.dragTranslation = .zero
+            }
+    }
+
+    private var resizeGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                // ジェスチャー中、Bindingを通じて親ビューのStateを直接更新
+                self.resizeDelta = value.translation
+            }
+            .onEnded { value in
+                // ジェスチャー終了時、永続化モデルを更新
+                let minWidth: Double = 150
+                let minHeight: Double = 100
+                item.width  = max(minWidth,  item.width  + value.translation.width)
+                item.height = max(minHeight, item.height + value.translation.height)
+                // 親ビューのStateをリセット
+                self.resizeDelta = .zero
+            }
+    }
+
+    // MARK: - Rows
+    private func taskRow(for task: TaskItem) -> some View {
+        HStack {
+            Image(systemName: task.isCompleted ? "checkmark.square.fill" : "square")
+                .font(.body)
+                .foregroundStyle(task.isCompleted ? Theme.accent : Theme.accent2.opacity(0.8))
+                .onTapGesture { toggleCompletion(for: task.id) }
+
+            Text(task.text)
+                .font(.callout)
+                .strikethrough(task.isCompleted, color: .secondary)
+                .foregroundStyle(task.isCompleted ? .secondary : .primary)
+
+            Spacer()
+
+            if let due = task.dueDate {
+                Text(due, format: item.cellType == .deadline ? .dateTime.month().day() : .dateTime.hour().minute())
+                    .font(.caption)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Theme.accent2.opacity(0.25))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+
+    private func memoRow(for content: MemoContentItem) -> some View {
+        HStack {
+            if content.isTask {
+                Image(systemName: content.isCompleted ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(content.isCompleted ? Theme.accent : Theme.accent2.opacity(0.8))
+                    .onTapGesture { toggleMemoTaskCompletion(for: content.id) }
+            }
+            Text(content.text)
+                .font(.callout)
+                .strikethrough(content.isCompleted, color: .secondary)
+                .foregroundStyle(content.isCompleted ? .secondary : .primary)
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+
+    // MARK: - Data Logic
+    private func toggleCompletion(for taskId: UUID) {
+        if let index = tasks.firstIndex(where: { $0.id == taskId }) {
+            tasks[index].isCompleted.toggle()
+            if tasks[index].isCompleted {
+                tasks[index].lastCompletedDate = Date()
+            }
+            saveContent()
+        }
+    }
+
+    private func toggleMemoTaskCompletion(for contentId: UUID) {
+        if let index = memoContent.firstIndex(where: { $0.id == contentId }) {
+            memoContent[index].isCompleted.toggle()
+            saveContent()
+        }
+    }
+
+    private func onAppearLoad() {
+        loadContent()
+
+        if item.cellType == .routine {
+            var changed = false
+            for i in tasks.indices {
+                if tasks[i].isCompleted,
+                   let last = tasks[i].lastCompletedDate,
+                   !Calendar.current.isDateInToday(last) {
+                    tasks[i].isCompleted = false
+                    changed = true
+                }
+            }
+            if changed { saveContent() }
+        } else if item.cellType == .today {
+            if !Calendar.current.isDateInToday(item.lastModifiedDate) {
+                tasks.removeAll()
+                saveContent()
+            }
+        }
+    }
+
+    private func loadContent() {
+        guard let data = item.content else { return }
+        let decoder = JSONDecoder()
+        switch item.cellType {
+        case .memo:
+            memoContent = (try? decoder.decode([MemoContentItem].self, from: data)) ?? []
+        default:
+            tasks = (try? decoder.decode([TaskItem].self, from: data)) ?? []
+        }
+    }
+
+    private func saveContent() {
+        let encoder = JSONEncoder()
+        if item.cellType == .memo {
+            item.content = try? encoder.encode(memoContent)
+        } else {
+            item.content = try? encoder.encode(tasks)
+        }
+        item.lastModifiedDate = Date()
+    }
+}
