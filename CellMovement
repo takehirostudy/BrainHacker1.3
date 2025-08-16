@@ -1,0 +1,101 @@
+import SwiftUI
+import SwiftData
+
+struct ContentView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \CellItem.creationDate) private var items: [CellItem]
+
+    @State private var editingItem: CellItem?
+    
+    // 各セルのドラッグとリサイズのライブ情報を一元管理するState
+    @State private var dragTranslations: [UUID: CGSize] = [:]
+    @State private var resizeDeltas: [UUID: CGSize] = [:]
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            LinearGradient(colors: [Theme.bgDark, Theme.bgMid],
+                           startPoint: .topLeading,
+                           endPoint: .bottomTrailing)
+                .ignoresSafeArea()
+
+            // ForEachで各セルをレイアウト
+            ForEach(items) { item in
+                // 現在のジェスチャー情報を取得
+                let dragTranslation = dragTranslations[item.id] ?? .zero
+                let resizeDelta = resizeDeltas[item.id] ?? .zero
+
+                // 永続化されたサイズとジェスチャー中の変化量を合成してライブサイズを計算
+                let liveWidth = max(150, item.width + resizeDelta.width)
+                let liveHeight = max(100, item.height + resizeDelta.height)
+
+                CellView(
+                    item: item,
+                    // Bindingを渡して、CellViewからこのStateを更新できるようにする
+                    dragTranslation: Binding(
+                        get: { dragTranslations[item.id] ?? .zero },
+                        set: { dragTranslations[item.id] = $0 }
+                    ),
+                    resizeDelta: Binding(
+                        get: { resizeDeltas[item.id] ?? .zero },
+                        set: { resizeDeltas[item.id] = $0 }
+                    ),
+                    onLongPress: { editingItem = item }
+                )
+                .frame(width: liveWidth, height: liveHeight) // ライブサイズを適用
+                .position( // ライブ位置を適用（positionは中心座標を指定）
+                    x: item.positionX + dragTranslation.width + liveWidth / 2,
+                    y: item.positionY + dragTranslation.height + liveHeight / 2
+                )
+                .transaction { $0.disablesAnimations = true }
+            }
+        }
+        .safeAreaInset(edge: .top) {
+            HStack {
+                Spacer()
+                AddCellMenu { type in addCell(of: type) }
+                    .padding(.trailing, 16)
+                    .padding(.top, 8)
+            }
+        }
+        .onAppear {
+            if items.isEmpty { addCell(of: .today) }
+        }
+        .sheet(item: $editingItem) { item in
+            EditingView(item: item)
+        }
+    }
+
+    private func addCell(of type: CellType) {
+        let baseX: Double = 20 + Double(items.count % 5) * 30
+        let baseY: Double = 60 + Double(items.count % 5) * 30
+        let newItem = CellItem(cellType: type, positionX: baseX, positionY: baseY)
+
+        if type == .memo {
+            let initialContent = [MemoContentItem(isTask: false, text: "")]
+            newItem.content = try? JSONEncoder().encode(initialContent)
+        }
+
+        modelContext.insert(newItem)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+}
+
+private struct AddCellMenu: View {
+    let onSelect: (CellType) -> Void
+    var body: some View {
+        Menu {
+            ForEach(CellType.allCases, id: \.self) { type in
+                Button(type.rawValue) { onSelect(type) }
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(14)
+                .background(Theme.accent, in: Circle())
+                .shadow(radius: 6, y: 2)
+                .overlay(Circle().stroke(.white.opacity(0.2), lineWidth: 1))
+                .accessibilityLabel("Add Cell")
+        }
+    }
+}
