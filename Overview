@@ -1,0 +1,273 @@
+import SwiftUI
+import SwiftData
+
+struct EditingView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    
+    @Bindable var item: CellItem
+    
+    @State private var tasks: [TaskItem] = []
+    @State private var memoContent: [MemoContentItem] = []
+    
+    @State private var currentlyEditingID: UUID?
+    @State private var activeText: String = ""
+    @FocusState private var isTextPadFocused: Bool
+    
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                List {
+                    switch item.cellType {
+                    case .memo:
+                        ForEach($memoContent) { $content in
+                            HStack {
+                                if content.isTask {
+                                    Image(systemName: content.isCompleted ? "checkmark.square.fill" : "square")
+                                        .foregroundStyle(content.isCompleted ? Theme.accent : Theme.accent2.opacity(0.8))
+                                        .onTapGesture { content.isCompleted.toggle() }
+                                }
+                                Text(content.text)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                    .strikethrough(content.isCompleted, color: .secondary)
+                            }
+                            .padding(.vertical, 4)
+                            .background(currentlyEditingID == content.id ? Theme.accent2.opacity(0.3) : Color.clear)
+                            .onTapGesture {
+                                currentlyEditingID = content.id
+                                activeText = content.text
+                                isTextPadFocused = true
+                            }
+                        }
+                        .onDelete(perform: deleteMemoContent)
+                        
+                    default:
+                        ForEach($tasks) { $task in
+                            HStack {
+                                Image(systemName: task.isCompleted ? "checkmark.square.fill" : "square")
+                                    .foregroundStyle(task.isCompleted ? Theme.accent : Theme.accent2.opacity(0.8))
+                                    .onTapGesture { task.isCompleted.toggle() }
+                                
+                                Text(task.text)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                    .strikethrough(task.isCompleted, color: .secondary)
+                                
+                                Spacer()
+                                
+                                if let due = task.dueDate {
+                                    dateChip(for: $task)
+                                } else {
+                                    addDateButton(for: $task)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                            .background(currentlyEditingID == task.id ? Theme.accent2.opacity(0.3) : Color.clear)
+                            .onTapGesture {
+                                currentlyEditingID = task.id
+                                activeText = task.text
+                                isTextPadFocused = true
+                            }
+                        }
+                        .onDelete(perform: deleteTasks)
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .navigationTitle(item.name)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItemGroup(placement: .topBarLeading) {
+                        Button("編集完了", action: completeEditing)
+                        Button(role: .destructive) {
+                            modelContext.delete(item)
+                            dismiss()
+                        } label: {
+                            Label("セルを削除", systemImage: "trash")
+                        }
+                    }
+                }
+                
+                VStack {
+                    Divider()
+                    HStack {
+                        Button {
+                            addCheckboxItem()
+                        } label: {
+                            Image(systemName: "checkmark.square")
+                        }
+                        
+                        Button {
+                            addDateToCurrentItem()
+                        } label: {
+                            switch item.cellType {
+                            case .routine, .today:
+                                Image(systemName: "clock")
+                            case .deadline, .memo:
+                                Image(systemName: "calendar")
+                            }
+                        }
+                        Spacer()
+                    }
+                    .font(.title3)
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    
+                    TextField("テキストを選択して編集", text: $activeText)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(.horizontal)
+                        .padding(.bottom)
+                        .focused($isTextPadFocused)
+                        .onSubmit(updateText)
+                        .onChange(of: activeText) { _, _ in updateText() }
+                }
+                .background(.thinMaterial)
+            }
+        }
+        .onAppear(perform: loadContent)
+        .background(BlurView()) // 背景ぼかし用のView
+        .interactiveDismissDisabled()
+    }
+    
+    @ViewBuilder
+    private func dateChip(for task: Binding<TaskItem>) -> some View {
+        let components: DatePickerComponents = item.cellType == .deadline ? .date : .hourAndMinute
+        DateChip(date: task.dueDate.or(Date()),
+                 components: components,
+                 onDateRemoved: { task.wrappedValue.dueDate = nil })
+    }
+    
+    @ViewBuilder
+    private func addDateButton(for task: Binding<TaskItem>) -> some View {
+        Button {
+            task.wrappedValue.dueDate = Date()
+        } label: {
+            let iconName = item.cellType == .deadline ? "calendar.badge.plus" : "clock.badge.plus"
+            Image(systemName: iconName)
+                .foregroundStyle(Theme.accent)
+        }
+    }
+
+    private func loadContent() {
+        guard let data = item.content else { return }
+        let decoder = JSONDecoder()
+        if item.cellType == .memo {
+            memoContent = (try? decoder.decode([MemoContentItem].self, from: data)) ?? []
+        } else {
+            tasks = (try? decoder.decode([TaskItem].self, from: data)) ?? []
+        }
+    }
+    
+    private func completeEditing() {
+        updateText()
+        let encoder = JSONEncoder()
+        if item.cellType == .memo {
+            item.content = try? encoder.encode(memoContent)
+        } else {
+            item.content = try? encoder.encode(tasks)
+        }
+        item.lastModifiedDate = Date()
+        dismiss()
+    }
+    
+    private func updateText() {
+        guard let id = currentlyEditingID else { return }
+        if item.cellType == .memo {
+            if let index = memoContent.firstIndex(where: { $0.id == id }) {
+                memoContent[index].text = activeText
+            }
+        } else {
+            if let index = tasks.firstIndex(where: { $0.id == id }) {
+                tasks[index].text = activeText
+            }
+        }
+    }
+    
+    private func addCheckboxItem() {
+        if item.cellType == .memo {
+            let newItem = MemoContentItem(isTask: true, text: "")
+            memoContent.append(newItem)
+            currentlyEditingID = newItem.id
+            activeText = ""
+            isTextPadFocused = true
+        } else {
+            let newTask = TaskItem(text: "")
+            tasks.append(newTask)
+            currentlyEditingID = newTask.id
+            activeText = ""
+            isTextPadFocused = true
+        }
+    }
+    
+    private func addDateToCurrentItem() {
+        guard let id = currentlyEditingID, item.cellType != .memo else { return }
+        if let index = tasks.firstIndex(where: { $0.id == id }) {
+            if tasks[index].dueDate == nil {
+                tasks[index].dueDate = Date()
+            }
+        }
+    }
+    
+    private func deleteTasks(at offsets: IndexSet) {
+        tasks.remove(atOffsets: offsets)
+    }
+    
+    private func deleteMemoContent(at offsets: IndexSet) {
+        memoContent.remove(atOffsets: offsets)
+    }
+}
+
+private struct DateChip: View {
+    @Binding var date: Date
+    let components: DatePickerComponents
+    let onDateRemoved: () -> Void
+    @State private var isPresented = false
+    
+    var body: some View {
+        Button { isPresented = true } label: {
+            Text(date, format: components == .date ? .dateTime.month().day() : .dateTime.hour().minute())
+                .font(.caption)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(Theme.accent2.opacity(0.25))
+                .foregroundStyle(.primary)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .popover(isPresented: $isPresented) {
+            VStack {
+                DatePicker("日付/時刻を選択",
+                           selection: $date,
+                           displayedComponents: components)
+                .datePickerStyle(.graphical)
+                .padding()
+                HStack {
+                    Button("削除", systemImage: "trash", role: .destructive) {
+                        onDateRemoved(); isPresented = false
+                    }
+                    Spacer()
+                    Button("完了") { isPresented = false }.fontWeight(.bold)
+                }
+                .padding([.horizontal, .bottom])
+            }
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+}
+
+// 背景ぼかし用のビュー
+struct BlurView: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIVisualEffectView {
+        return UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
+    }
+    func updateUIView(_ uiView: UIVisualEffectView, context: Context) {}
+}
+
+// 修正済みのBindingヘルパー
+extension Binding where Value: ExpressibleByNilLiteral {
+    func or<T>(_ defaultValue: T) -> Binding<T> where Value == Optional<T> {
+        return Binding<T>(
+            get: { self.wrappedValue ?? defaultValue },
+            set: { self.wrappedValue = $0 }
+        )
+    }
+}
